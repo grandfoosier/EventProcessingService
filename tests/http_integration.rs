@@ -60,6 +60,14 @@ async fn http_end_to_end() -> anyhow::Result<()> {
     let v: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap_or_default();
     assert_eq!(v["status"], json!("Completed"));
 
+    // telemetry assertions
+    assert!(state.telemetry.events_processed.get() > 0);
+    assert_eq!(state.telemetry.queue_depth.get() as i64, 0);
+
+    // metrics handler output should include processed metric
+    let metrics_body = state.telemetry.gather();
+    assert!(metrics_body.contains("events_processed_total"));
+
     // metrics and healthz handlers
     let _m = metrics(AxState(state.clone())).await.into_response();
     let _h = healthz(AxState(state.clone())).await.into_response();

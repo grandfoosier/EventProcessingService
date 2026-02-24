@@ -13,73 +13,6 @@ pub enum StoreError {
     NotFound,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::event::{Event, EventPayload, EventType};
-    use chrono::Utc;
-    use serde_json::json;
-
-    #[tokio::test]
-    async fn insert_and_get() {
-        let store = MemoryStore::new();
-        let ev = Event {
-            event_id: "e1".to_string(),
-            event_type: EventType::UserLoginFailed,
-            occurred_at: Utc::now(),
-            payload: EventPayload(json!({"user_id": "u1"})),
-        };
-        let (_rec, inserted) = store.insert_if_absent(ev.clone()).await;
-        assert!(inserted);
-        let got = store.get(&ev.event_id).await.unwrap();
-        assert_eq!(got.event.event_id, "e1");
-        assert_eq!(got.status, EventStatus::Received);
-
-        // idempotent insert
-        let (_rec2, inserted2) = store.insert_if_absent(ev).await;
-        assert!(!inserted2);
-    }
-
-    #[tokio::test]
-    async fn claim_and_complete() {
-        let store = MemoryStore::new();
-        let ev = Event {
-            event_id: "e2".to_string(),
-            event_type: EventType::UserLoginFailed,
-            occurred_at: Utc::now(),
-            payload: EventPayload(json!({})),
-        };
-        let (_rec, _ins) = store.insert_if_absent(ev.clone()).await;
-        let claimed = store.claim_for_processing(&ev.event_id).await.unwrap();
-        assert!(claimed);
-        // second claim should return false because it's Processing now
-        let claimed2 = store.claim_for_processing(&ev.event_id).await.unwrap();
-        assert!(!claimed2);
-
-        // set result
-        store.set_result(&ev.event_id, json!({"ok": true})).await.unwrap();
-        let got = store.get(&ev.event_id).await.unwrap();
-        assert_eq!(got.status, EventStatus::Completed);
-        assert_eq!(got.result.unwrap()["ok"], json!(true));
-    }
-
-    #[tokio::test]
-    async fn set_failed_marks_failed() {
-        let store = MemoryStore::new();
-        let ev = Event {
-            event_id: "e3".to_string(),
-            event_type: EventType::UserLoginFailed,
-            occurred_at: Utc::now(),
-            payload: EventPayload(json!({})),
-        };
-        let (_rec, _ins) = store.insert_if_absent(ev.clone()).await;
-        store.set_failed(&ev.event_id, "boom".to_string()).await.unwrap();
-        let got = store.get(&ev.event_id).await.unwrap();
-        assert_eq!(got.status, EventStatus::Failed);
-        assert_eq!(got.last_error.unwrap(), "boom");
-    }
-}
-
 #[derive(Clone)]
 pub struct MemoryStore {
     inner: Arc<RwLock<HashMap<String, EventRecord>>>,
@@ -190,5 +123,89 @@ impl MemoryStore {
                 let _ = ttimeout(remaining, tokio::time::sleep(std::time::Duration::from_millis(50))).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::event::{Event, EventPayload, EventType};
+    use chrono::Utc;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn insert_and_get() {
+        let store = MemoryStore::new();
+        let ev = Event {
+            event_id: "e1".to_string(),
+            event_type: EventType::UserLoginFailed,
+            occurred_at: Utc::now(),
+            payload: EventPayload(json!({"user_id": "u1"})),
+        };
+        let (_rec, inserted) = store.insert_if_absent(ev.clone()).await;
+        assert!(inserted);
+        let got = store.get(&ev.event_id).await.unwrap();
+        assert_eq!(got.event.event_id, "e1");
+        assert_eq!(got.status, EventStatus::Received);
+
+        // idempotent insert
+        let (_rec2, inserted2) = store.insert_if_absent(ev).await;
+        assert!(!inserted2);
+    }
+
+    #[tokio::test]
+    async fn claim_and_complete() {
+        let store = MemoryStore::new();
+        let ev = Event {
+            event_id: "e2".to_string(),
+            event_type: EventType::UserLoginFailed,
+            occurred_at: Utc::now(),
+            payload: EventPayload(json!({})),
+        };
+        let (_rec, _ins) = store.insert_if_absent(ev.clone()).await;
+        let claimed = store.claim_for_processing(&ev.event_id).await.unwrap();
+        assert!(claimed);
+        // second claim should return false because it's Processing now
+        let claimed2 = store.claim_for_processing(&ev.event_id).await.unwrap();
+        assert!(!claimed2);
+
+        // set result
+        store.set_result(&ev.event_id, json!({"ok": true})).await.unwrap();
+        let got = store.get(&ev.event_id).await.unwrap();
+        assert_eq!(got.status, EventStatus::Completed);
+        assert_eq!(got.result.unwrap()["ok"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn set_failed_marks_failed() {
+        let store = MemoryStore::new();
+        let ev = Event {
+            event_id: "e3".to_string(),
+            event_type: EventType::UserLoginFailed,
+            occurred_at: Utc::now(),
+            payload: EventPayload(json!({})),
+        };
+        let (_rec, _ins) = store.insert_if_absent(ev.clone()).await;
+        store.set_failed(&ev.event_id, "boom".to_string()).await.unwrap();
+        let got = store.get(&ev.event_id).await.unwrap();
+        assert_eq!(got.status, EventStatus::Failed);
+        assert_eq!(got.last_error.unwrap(), "boom");
+    }
+
+    #[tokio::test]
+    async fn set_error_and_mark_received_roundtrip() {
+        let store = MemoryStore::new();
+        let ev = Event {
+            event_id: "e4".to_string(),
+            event_type: EventType::UserLoginFailed,
+            occurred_at: Utc::now(),
+            payload: EventPayload(json!({})),
+        };
+        let (_rec, _ins) = store.insert_if_absent(ev.clone()).await;
+        // simulate an error and mark received for retry
+        store.set_error_and_mark_received(&ev.event_id, "transient".to_string()).await.unwrap();
+        let got = store.get(&ev.event_id).await.unwrap();
+        assert_eq!(got.status, EventStatus::Received);
+        assert_eq!(got.last_error.unwrap(), "transient");
     }
 }

@@ -49,4 +49,19 @@ async fn integration_ingest_and_process() {
     assert_eq!(got.status, event_processing_service::domain::state::EventStatus::Completed);
     assert!(telemetry.events_ingested.get() > 0);
     assert!(telemetry.events_deduped.get() > 0);
+    // telemetry: ensure the processor observed the event
+    assert!(telemetry.events_processed.get() > 0);
+    // queue should be drained after processing
+    assert_eq!(telemetry.queue_depth.get() as i64, 0);
+    // no failures expected for this happy-path event
+    assert_eq!(telemetry.events_failed.get(), 0);
+
+    // gather should include all registered metric names
+    let gathered = telemetry.gather();
+    assert!(gathered.contains("events_ingested_total"));
+    assert!(gathered.contains("events_deduped_total"));
+    assert!(gathered.contains("events_processed_total"));
+    assert!(gathered.contains("events_failed_total"));
+    assert!(gathered.contains("queue_depth"));
+    assert!(gathered.contains("event_processing_seconds_count") || gathered.contains("event_processing_seconds_sum"));
 }

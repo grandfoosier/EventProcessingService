@@ -93,16 +93,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::MemoryStore;
+    use crate::telemetry::Telemetry;
     use crate::domain::event::{Event, EventPayload, EventType};
     use chrono::Utc;
     use serde_json::json;
-    use tokio::time::sleep;
+    use std::sync::Arc;
+    use tokio::sync::{mpsc, Mutex};
 
     #[tokio::test]
     async fn processor_retries_and_fails() {
         let store = MemoryStore::new();
         let (tx, rx) = mpsc::channel::<String>(16);
-        let tx_for_ingest = tx.clone();
 
         // handler always fails
         let handler = |_: Event| async move { Err("boom".to_string()) };
@@ -110,7 +112,7 @@ mod tests {
         // start processor pool
         let shared_rx = Arc::new(Mutex::new(rx));
         let telemetry = Telemetry::new();
-        run_processor_pool(store.clone(), shared_rx, tx.clone(), 2, 3, telemetry, handler);
+        run_processor_pool(store.clone(), shared_rx, tx.clone(), 2, 3, telemetry.clone(), handler);
 
         // insert event via store directly
         let ev = Event {
@@ -122,12 +124,17 @@ mod tests {
         let (_rec, inserted) = store.insert_if_absent(ev.clone()).await;
         assert!(inserted);
         // enqueue
-        let _ = tx_for_ingest.send(ev.event_id.clone()).await;
+        let _ = tx.send(ev.event_id.clone()).await;
 
-        // allow retries to exhaust
-        sleep(Duration::from_millis(1000)).await;
+        // wait for processing to complete (deterministic via wait_for_status)
+        let ok = store.wait_for_status(&ev.event_id, crate::domain::state::EventStatus::Failed, std::time::Duration::from_secs(5)).await;
+        assert!(ok, "event did not reach Failed status in time");
+
         let rec = store.get(&ev.event_id).await.unwrap();
         assert_eq!(rec.status, crate::domain::state::EventStatus::Failed);
         assert!(rec.attempts >= 3);
+
+        // telemetry assertions
+        assert!(telemetry.events_failed.get() > 0);
     }
 }

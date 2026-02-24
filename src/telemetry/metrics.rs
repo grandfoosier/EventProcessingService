@@ -41,3 +41,16 @@ impl Telemetry {
         String::from_utf8(buffer).unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gather_contains_metric_names() {
+        let t = Telemetry::new();
+        t.events_ingested.inc();
+        let out = t.gather();
+        assert!(out.contains("events_ingested_total"), "gather output should contain metric name");
+    }
+}
