@@ -15,9 +15,8 @@ prometheus = "0.14"
 thiserror = "1.0"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
-# Add hyper to allow running the server in tests
-hyper = { version = "0.14", features = ["server"] }
-# hyper is provided via axum; no direct dependency required
+hyper = { version = "0.14", features = ["tcp", "server", "http1"] }
+
 
 [features]
 default = []
